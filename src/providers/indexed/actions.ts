@@ -24,7 +24,7 @@ const domainMatchSchema = s.object(
   },
 );
 
-const companyCardSchema = s.looseObject(
+const companyCardSchema = s.object(
   {
     id: s.uuid("The Indexed company id."),
     name: s.string("The company name."),
@@ -32,7 +32,7 @@ const companyCardSchema = s.looseObject(
     logo_url: s.nullableString("The company logo URL, or null."),
     website: s.nullableString("The company website, or null."),
     short_description: s.nullableString("A one or two sentence description, or null."),
-    industries: s.array("Canonical industry labels.", s.string("One industry label.")),
+    industries: s.nullable(s.array("Canonical industry labels, or null.", s.string("One industry label."))),
     hq_city: s.nullableString("Headquarters city, or null."),
     hq_country: s.nullableString("Headquarters country, or null."),
     employee_count_range: s.nullableString("Employee count bucket such as 51-200, or null."),
@@ -43,18 +43,43 @@ const companyCardSchema = s.looseObject(
     _revealed: s.boolean("True when this account has already unlocked the company's detail within the last 12 months."),
     domain_match: domainMatchSchema,
   },
-  { description: "The public company card. Fields not listed here may also be present." },
+  {
+    additionalProperties: true,
+    optional: [
+      "logo_url",
+      "website",
+      "short_description",
+      "industries",
+      "hq_city",
+      "hq_country",
+      "employee_count_range",
+      "total_funding_raised",
+      "operating_status",
+      "domain_match",
+    ],
+    description: "The public company card. Fields not listed here may also be present.",
+  },
 );
 
-const searchMetaSchema = s.looseObject(
+const searchMetaSchema = s.object(
   {
     total: s.integer("Total number of matches."),
     page: s.integer("The page number returned."),
     limit: s.integer("The page size used."),
     hasMore: s.boolean("Whether another page exists."),
+    revealed_count: s.integer("Count of matches this account has already unlocked."),
+    unrevealed_count: s.integer("Count of matches this account has not unlocked."),
+    all_revealed: s.boolean("Present when reveal_status is unrevealed but every match is already unlocked."),
+    resolved_filters: s.unknownObject(
+      "Echo of the resolved filter values, such as ai-ml resolved to AI/ML. Present when filters are applied.",
+    ),
     next_cursor: s.string("Present on paid plans when more results exist. Pass it back as cursor for the next page."),
   },
-  { description: "Pagination and reveal counts for the result set." },
+  {
+    additionalProperties: true,
+    optional: ["all_revealed", "resolved_filters", "next_cursor"],
+    description: "Pagination and reveal counts for the result set.",
+  },
 );
 
 const coverageStatusSchema = s.stringEnum(
@@ -62,7 +87,7 @@ const coverageStatusSchema = s.stringEnum(
   ["queued", "not_queued", "pending_enrichment", "scope_review", "not_in_coverage_scope", "not_found"],
 );
 
-const companyListOutputSchema = s.looseObject(
+const companyListOutputSchema = s.object(
   {
     data: s.array("Matching company cards. Empty when nothing matched.", companyCardSchema),
     meta: searchMetaSchema,
@@ -71,10 +96,14 @@ const companyListOutputSchema = s.looseObject(
     ),
     coverage_status: coverageStatusSchema,
   },
-  { description: "A page of company cards as returned by Indexed." },
+  {
+    additionalProperties: true,
+    optional: ["coverage_requested", "coverage_status"],
+    description: "A page of company cards as returned by Indexed.",
+  },
 );
 
-const lookupItemSchema = s.looseObject(
+const lookupItemSchema = s.object(
   {
     domain: s.string("The normalized domain this result belongs to."),
     status: s.stringEnum(
@@ -89,22 +118,28 @@ const lookupItemSchema = s.looseObject(
       "Present on a miss. Currently null because manual review has no guaranteed completion date.",
     ),
   },
-  { description: "The lookup outcome for one domain. data is present only when status is hit." },
+  {
+    additionalProperties: true,
+    optional: ["data", "coverage_requested", "coverage_status", "coverage_eta_days"],
+    description: "The lookup outcome for one domain. data is present only when status is hit.",
+  },
 );
 
-const companyProfileSchema = s.looseObject(
+const companyProfileSchema = s.object(
   {
     id: s.uuid("The Indexed company id."),
     name: s.string("The company name."),
     slug: s.string("The company slug."),
     website: s.nullableString("The company website, or null."),
     short_description: s.nullableString("A one or two sentence description, or null."),
-    industries: s.array("Canonical industry labels.", s.string("One industry label.")),
+    industries: s.nullable(s.array("Canonical industry labels, or null.", s.string("One industry label."))),
     hq_country: s.nullableString("Headquarters country, or null."),
     total_funding_raised: s.nullableInteger("Total disclosed funding in whole USD, grants included, or null."),
     operating_status: s.nullableString("One of active, acquired, ipo, closed, or null when unknown."),
   },
   {
+    additionalProperties: true,
+    optional: ["website", "short_description", "industries", "hq_country", "total_funding_raised", "operating_status"],
     description:
       "The company profile. slim returns identity fields. standard adds all scalar fields plus owners and subsidiaries. full adds valuationEvents (funding rounds with participating investors), technologies and appStack. Amounts are whole USD and a null amount means undisclosed.",
   },
@@ -129,8 +164,21 @@ const searchInputSchema: JsonSchema = s.object(
       s.stringEnum("One operating status.", operatingStatuses),
       { minItems: 1 },
     ),
-    minFunding: s.nonNegativeInteger("Minimum total funding in whole USD, grants included."),
-    maxFunding: s.nonNegativeInteger("Maximum total funding in whole USD, grants included."),
+    minFunding: s.nonNegativeInteger(
+      "Minimum total funding in whole USD, grants included. Funding filters are paid-plan only.",
+    ),
+    maxFunding: s.nonNegativeInteger(
+      "Maximum total funding in whole USD, grants included. Funding filters are paid-plan only.",
+    ),
+    minCompleteness: s.integer("Minimum data_completeness_score, to skip thin records.", { minimum: 0, maximum: 64 }),
+    updatedSince: s.nonEmptyString(
+      "Incremental sync: only records modified at or after this ISO 8601 date or timestamp, such as 2026-09-01 or 2026-09-01T00:00:00Z. Combine with cursor for delta pulls.",
+    ),
+    revealStatus: s.stringEnum("Filter results by whether this account has unlocked them. Defaults to all.", [
+      "all",
+      "revealed",
+      "unrevealed",
+    ]),
     sort: s.stringEnum("Sort field. Sorting is part of the paid-plan listing surface.", [
       "total_funding_raised",
       "name",
@@ -141,7 +189,7 @@ const searchInputSchema: JsonSchema = s.object(
     ]),
     order: s.stringEnum("Sort direction.", ["asc", "desc"]),
     page: s.integer("Page number, starting at 1. Free keys can read pages 1 through 3.", { minimum: 1 }),
-    limit: s.integer("Results per page.", { minimum: 1, maximum: 100 }),
+    limit: s.integer("Results per page. Defaults to 25. Free keys get 10 rows per page.", { minimum: 1, maximum: 100 }),
     cursor: s.nonEmptyString(
       "Paid plans only. The meta.next_cursor value from the previous page, for sequential bulk pulls. When set, page and sort are ignored.",
     ),
@@ -155,6 +203,9 @@ const searchInputSchema: JsonSchema = s.object(
       "operatingStatus",
       "minFunding",
       "maxFunding",
+      "minCompleteness",
+      "updatedSince",
+      "revealStatus",
       "sort",
       "order",
       "page",

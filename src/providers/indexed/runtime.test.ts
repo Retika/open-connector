@@ -43,17 +43,22 @@ describe("Indexed runtime", () => {
     expect(error).toMatchObject({ status: 402, code: "insufficient_credit" });
   });
 
-  it("keeps a plan-tier refusal separate from a credential failure", async () => {
+  it("keeps a plan-tier refusal separate from a credential failure and preserves a not-found status", async () => {
     const tier = contextFor(() =>
       Response.json({ error: "Upgrade required", code: "TIER_UPGRADE_REQUIRED" }, { status: 403 }),
     );
     const badKey = contextFor(() => Response.json({ error: "Invalid API key", code: "UNAUTHORIZED" }, { status: 401 }));
+    const missing = contextFor(() => Response.json({ error: "Company not found", code: "NOT_FOUND" }, { status: 404 }));
 
     await expect(indexedActionHandlers.search_companies!({ cursor: "abc" }, tier)).rejects.toMatchObject({
       status: 400,
     });
     await expect(indexedActionHandlers.get_company!({ slug: "stripe" }, badKey)).rejects.toMatchObject({
       status: 401,
+    });
+    await expect(indexedActionHandlers.get_company!({ slug: "missing-co" }, missing)).rejects.toMatchObject({
+      status: 404,
+      message: "Company not found",
     });
   });
 

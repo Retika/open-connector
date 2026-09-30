@@ -7,6 +7,7 @@ import {
   parseProviderJsonBodyText,
   providerUserAgent,
   ProviderRequestError,
+  readProviderErrorTextBody,
   readProviderTextBody,
   requiredInputString,
   requiredResponseRecord,
@@ -50,6 +51,9 @@ export const indexedActionHandlers: ProviderActionHandlers<"indexed", IndexedAct
         operatingStatus: joinList(input.operatingStatus),
         minFunding: optionalInteger(input.minFunding),
         maxFunding: optionalInteger(input.maxFunding),
+        minCompleteness: optionalInteger(input.minCompleteness),
+        updated_since: optionalString(input.updatedSince),
+        reveal_status: optionalString(input.revealStatus),
         sort: optionalString(input.sort),
         order: optionalString(input.order),
         page: optionalInteger(input.page),
@@ -118,40 +122,46 @@ async function requestIndexed(input: IndexedRequest): Promise<Record<string, unk
       body: input.body ? JSON.stringify(input.body) : undefined,
       signal,
     });
+    if (!response.ok) {
+      throw await readIndexedError(response, input.phase ?? "execute");
+    }
     const payload = parseProviderJsonBodyText(await readProviderTextBody(response, "Indexed response"), {
       emptyBody: {},
       invalidJsonMessage: "Indexed returned malformed JSON",
-      invalidJsonFallback: response.ok ? undefined : () => ({}),
     });
-    if (!response.ok) {
-      throw mapIndexedError(response, payload, input.phase ?? "execute");
-    }
     return requiredResponseRecord(payload, "Indexed response");
   });
 }
 
 /**
- * Map an Indexed error response onto the runtime's status conventions.
+ * Read an Indexed error response and map it onto the runtime's status conventions.
  * 402 is a billing state (credits exhausted), reported as insufficient_credit.
  * 403 TIER_UPGRADE_REQUIRED is a plan limit rather than a credential failure, so
- * it is reported as invalid input instead of prompting a reconnect.
+ * it is reported as invalid input instead of prompting a reconnect. During key
+ * validation a 401 or 403 is a field error on the submitted key. Every other
+ * status keeps its upstream value, so a 404 stays a not-found result.
  */
-function mapIndexedError(response: Response, payload: unknown, phase: IndexedPhase): ProviderRequestError {
+export async function readIndexedError(
+  response: Response,
+  phase: IndexedPhase = "execute",
+): Promise<ProviderRequestError> {
   const status = response.status;
+  const payload = parseProviderJsonBodyText(await readProviderErrorTextBody(response, "Indexed error response"), {
+    emptyBody: {},
+    invalidJsonMessage: "Indexed returned malformed JSON",
+    invalidJsonFallback: () => ({}),
+  });
   const body = optionalRecord(payload);
   const message = optionalString(body?.error) ?? `Indexed request failed with HTTP ${status}`;
   const details = withRetryAfterSeconds(response, payload);
   if (status === 402) {
     return new ProviderRequestError(402, message, details, "insufficient_credit");
   }
-  if (status === 429) {
-    return new ProviderRequestError(429, message, details);
+  if (
+    (status === 401 || status === 403) &&
+    (phase === "validate" || optionalString(body?.code) === "TIER_UPGRADE_REQUIRED")
+  ) {
+    return new ProviderRequestError(400, message, details);
   }
-  if (status === 401 || status === 403) {
-    if (phase === "validate" || optionalString(body?.code) === "TIER_UPGRADE_REQUIRED") {
-      return new ProviderRequestError(400, message, details);
-    }
-    return new ProviderRequestError(status, message, details);
-  }
-  return new ProviderRequestError(status >= 500 ? status : 400, message, details);
+  return new ProviderRequestError(status, message, details);
 }
